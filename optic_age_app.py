@@ -1,338 +1,175 @@
-"""
-Optic Age™ — Optic Nerve Biological Aging Calculator
-Streamlit App
-
-Requirements (your venv):
-    pip install streamlit pandas numpy matplotlib shap joblib pillow xgboost
-
-Expected local files in the same folder:
-    - optic_age_model_tuned.pkl   (tuned official OD-only model)
-    - optic_age_features.pkl      (list of feature column names)
-    - master_2019_2021.csv        (KNHANES 2019–2021 master file)
-    - optic_age_icon.png          (optional, App Store style icon)
-"""
+# optic_age_app.py
+# Optic Age™ — Optic Nerve Biological Aging Calculator
+# (no raw KNHANES DB required; uses only pre-trained model + summary stats)
 
 import math
+from math import pi
 
 import joblib
 import numpy as np
 import pandas as pd
-import shap
 import streamlit as st
 import matplotlib.pyplot as plt
+from matplotlib.colors import TwoSlopeNorm
 
-from PIL import Image
+# -----------------------------
+# 0. Paths & basic settings
+# -----------------------------
+MODEL_PATH = "optic_age_model_tuned.pkl"      # tuned OD-only model
+FEATURES_PATH = "optic_age_features.pkl"      # list of feature names used in the model
+NORM_TABLE_PATH = "norm_table.csv"           # small summary table (optional override)
 
-# ============================================================
-# 0. PAGE CONFIG & GLOBAL STYLE (DARK THEME)
-# ============================================================
+# 기본값 (norm_table.csv 가 없거나 형식이 안 맞을 때 사용)
+DEFAULT_RNFL_MEAN = 100.0      # µm, KNHANES 분석값으로 나중에 교체 가능
+DEFAULT_RNFL_SD = 10.0         # µm
+DEFAULT_ONAS_SIGMA = 6.0       # years, Δage 분산의 대략적인 표준편차
 
-# Load app icon if exists
-try:
-    APP_ICON = Image.open("optic_age_icon.png")
-except Exception:
-    APP_ICON = None
+RNFL_FEATURES = [
+    f"CLOCKHOUR_{i}_OD" for i in range(1, 13)
+]
+GCIPL_FEATURES = [
+    "GC_TEMPSUP_OD",
+    "GC_SUP_OD",
+    "GC_NASSUP_OD",
+    "GC_NASINF_OD",
+    "GC_INF_OD",
+    "GC_TEMPINF_OD",
+]
 
-if APP_ICON is not None:
-    st.set_page_config(
-        page_title="Optic Age™ — Optic Nerve Biological Aging Calculator",
-        page_icon=APP_ICON,
-        layout="wide",
-    )
-else:
-    st.set_page_config(
-        page_title="Optic Age™ — Optic Nerve Biological Aging Calculator",
-        layout="wide",
-    )
+CORE_FEATURES = RNFL_FEATURES + GCIPL_FEATURES + [
+    "GC_MINIMUM_OD",
+    "RNFL_AVERAGE_OD",
+    "GC_AVERAGE_OD",
+    "DISCAREA_OD",
+    "VERTICAL_CD_RATIO_OD",
+    "AL_R",
+    "sex",
+]
 
-# --- Dark background + font 색 조정 ---
-st.markdown(
-    """
-    <style>
-    body {
-        background-color: #000000;
-    }
-    .stApp {
-        background-color: #000000;
-        color: #f5f5f5;
-    }
-    div.block-container {
-        padding-top: 1rem;
-    }
-    /* Remove top padding of forms etc. */
-    .stTextInput>div>div>input, .stNumberInput>div>div>input {
-        background-color: #111111;
-        color: #f5f5f5;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# Header: icon + title + author
-col_icon, col_title = st.columns([1, 6])
-
-with col_icon:
-    if APP_ICON is not None:
-        st.image(APP_ICON, width=90)
-
-with col_title:
-    st.markdown(
-        """
-        # **Optic Age™ — Optic Nerve Biological Aging Calculator**
-        **Developed by Professor Young Kook Kim, Seoul National University Hospital (SNUH)**
-        """
-    )
-
-st.caption(
-    "A machine-learning–based clinical decision support tool estimating the biological aging "
-    "of the optic nerve using OCT metrics from KNHANES 2019–2021."
-)
-
-# ============================================================
-# 1. CONFIG PATHS
-# ============================================================
-
-MODEL_PATH = "optic_age_model_tuned.pkl"   # tuned official model (OD only)
-FEATURES_PATH = "optic_age_features.pkl"   # feature list used in training
-MASTER_PATH = "master_2019_2021.csv"       # KNHANES 2019–2021 master CSV
-
-
-# ============================================================
-# 2. HELPER FUNCTIONS
-# ============================================================
-
-@st.cache_resource(show_spinner=True)
+# -----------------------------
+# 1. Cached loaders
+# -----------------------------
+@st.cache_resource
 def load_model_and_features():
-    """Load tuned optic nerve age model and list of features."""
+    """Load pretrained model & feature list (no KNHANES raw data)."""
     model = joblib.load(MODEL_PATH)
     feature_cols = joblib.load(FEATURES_PATH)
     return model, feature_cols
 
 
-@st.cache_resource(show_spinner=True)
-def load_supernormal_and_normative(feature_cols):
+@st.cache_data
+def load_normative_params():
     """
-    1) Apply 'super-normal' criteria:
-       - age >= 20
-       - E_GR != 1 (no glaucoma by KNHANES grading)
-       - E_DM, E_AMD, E_EM, E_MH, E_RVO != 1 (no major retinal disease)
-       - E_Pr_1 <= 21 mmHg (or missing)
-       - AL_R <= 26.0 mm
-       - RNFL_AVERAGE_OD >= 70 µm
-    2) Keep complete cases for feature_cols + age + wt_itvex
-    3) Compute 3-year combined weights (wt_itvex / 3)
-    4) Compute weighted mean/SD of RNFL_AVERAGE_OD (norm database)
+    Load summary KNHANES-derived parameters for RNFL & ONAS.
+    norm_table.csv (optional) should have columns:
+        rnfl_mean, rnfl_sd, onas_sigma
+    Only the first row is used.
     """
+    rnfl_mean = DEFAULT_RNFL_MEAN
+    rnfl_sd = DEFAULT_RNFL_SD
+    onas_sigma = DEFAULT_ONAS_SIGMA
 
-    df = pd.read_csv(MASTER_PATH, low_memory=False)
+    try:
+        df = pd.read_csv(NORM_TABLE_PATH)
+        if "rnfl_mean" in df.columns:
+            rnfl_mean = float(df.loc[0, "rnfl_mean"])
+        if "rnfl_sd" in df.columns:
+            rnfl_sd = float(df.loc[0, "rnfl_sd"])
+        if "onas_sigma" in df.columns:
+            onas_sigma = float(df.loc[0, "onas_sigma"])
+    except Exception:
+        # quietly fall back to defaults
+        pass
 
-    extra_cols = [
-        "E_Pr_1",
-        "age",
-        "wt_itvex",
-        "E_GR",
-        "E_DM",
-        "E_AMD",
-        "E_EM",
-        "E_MH",
-        "E_RVO",
-        "RNFL_AVERAGE_OD",
-        "AL_R",
-    ]
-
-    needed_cols = list(set(feature_cols + extra_cols))
-    needed_cols = [c for c in needed_cols if c in df.columns]
-    df_sub = df[needed_cols].copy()
-
-    # handle missing codes for IOP, RNFL, AL
-    if "E_Pr_1" in df_sub.columns:
-        df_sub["E_Pr_1"] = df_sub["E_Pr_1"].replace(
-            {
-                888: np.nan, 888.8: np.nan, 888.88: np.nan,
-                999: np.nan, 999.8: np.nan, 999.99: np.nan,
-                8888: np.nan, 9999: np.nan,
-            }
-        )
-
-    if "AL_R" in df_sub.columns:
-        df_sub.loc[df_sub["AL_R"] > 40, "AL_R"] = np.nan
-
-    if "RNFL_AVERAGE_OD" in df_sub.columns:
-        df_sub["RNFL_AVERAGE_OD"] = df_sub["RNFL_AVERAGE_OD"].replace(
-            {
-                888: np.nan, 999: np.nan,
-                888.8: np.nan, 888.88: np.nan,
-                999.8: np.nan, 999.99: np.nan,
-                8888: np.nan, 9999: np.nan,
-            }
-        )
-        df_sub.loc[df_sub["RNFL_AVERAGE_OD"] >= 900, "RNFL_AVERAGE_OD"] = np.nan
-
-    for col in ["E_GR", "E_DM", "E_AMD", "E_EM", "E_MH", "E_RVO"]:
-        if col in df_sub.columns:
-            df_sub.loc[~df_sub[col].isin([0, 1]), col] = np.nan
-
-    crit = (
-        (df_sub["age"] >= 20)
-        & (df_sub["E_GR"] != 1)
-        & (df_sub["E_DM"] != 1)
-        & (df_sub["E_AMD"] != 1)
-        & (df_sub["E_EM"] != 1)
-        & (df_sub["E_MH"] != 1)
-        & (df_sub["E_RVO"] != 1)
-        & ((df_sub["E_Pr_1"].isna()) | (df_sub["E_Pr_1"] <= 21))
-        & (df_sub["AL_R"] <= 26.0)
-    )
-
-    if "RNFL_AVERAGE_OD" in df_sub.columns:
-        crit = crit & (df_sub["RNFL_AVERAGE_OD"] >= 70)
-
-    super_normal = df_sub[crit].copy()
-    required_cols = list(feature_cols) + ["age", "wt_itvex"]
-    super_normal = super_normal.dropna(subset=required_cols)
-
-    # 3년 통합 weight
-    super_normal["wt3"] = super_normal["wt_itvex"] / 3.0
-
-    # RNFL normative mean/SD
-    if "RNFL_AVERAGE_OD" in super_normal.columns:
-        w = super_normal["wt3"].values
-        x = super_normal["RNFL_AVERAGE_OD"].values
-        w_sum = np.sum(w)
-        rnfl_mean = float(np.sum(w * x) / w_sum)
-        rnfl_var = float(np.sum(w * (x - rnfl_mean) ** 2) / w_sum)
-        rnfl_sd = float(np.sqrt(rnfl_var))
-    else:
-        rnfl_mean, rnfl_sd = None, None
-
-    return super_normal, rnfl_mean, rnfl_sd
+    return rnfl_mean, rnfl_sd, onas_sigma
 
 
+# -----------------------------
+# 2. Helper functions
+# -----------------------------
 def normal_cdf(z: float) -> float:
+    """Standard normal CDF using error function (no SciPy dependency)."""
     return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
 
-def compute_rnfl_z_and_percentile(rnfl_value, rnfl_mean, rnfl_sd):
-    if rnfl_mean is None or rnfl_sd is None or rnfl_sd <= 0 or rnfl_value is None:
-        return None, None
+def compute_onas(delta_age: float, onas_sigma: float):
+    """
+    Optic Nerve Aging Score (ONAS):
+    - Input : delta_age = predicted_age - chronological_age
+    - ONAS percentile : lower = weaker / more vulnerable.
+      We assume Δage ~ N(0, onas_sigma^2) in super-normal population.
+    """
+    if onas_sigma <= 0:
+        onas_sigma = DEFAULT_ONAS_SIGMA
+
+    z = delta_age / onas_sigma
+    # older (delta_age>0) -> lower percentile
+    percentile = 100.0 * (1.0 - normal_cdf(z))
+    return percentile, z
+
+
+def compute_rnfl_z_and_percentile(rnfl_value: float, rnfl_mean: float, rnfl_sd: float):
+    """
+    RNFL Z-score & percentile vs KNHANES super-normal distribution.
+    - Higher RNFL is better; lower percentile = thinner / more vulnerable.
+    """
+    if rnfl_sd <= 0:
+        rnfl_sd = DEFAULT_RNFL_SD
+
     z = (rnfl_value - rnfl_mean) / rnfl_sd
-    pct = normal_cdf(z) * 100.0
-    return float(z), float(pct)
+    percentile = 100.0 * normal_cdf(z)
+    return z, percentile
 
 
-def compute_onas(pred_age, chrono_age, resid_mean, resid_sd):
-    """
-    ONAS:
-      1) ΔAge = Predicted optic nerve age − chronological age
-      2) raw_z = (ΔAge − resid_mean) / resid_sd
-      3) ONAS_percentile = (1 − Φ(raw_z)) × 100
-         → Lower percentile = more accelerated aging (worse / more vulnerable)
-         → Higher percentile = younger / more resilient optic nerve
-    """
-    delta = pred_age - chrono_age
-    if resid_sd is None or resid_sd <= 0:
-        return delta, None, None, "Not available"
-
-    raw_z = (delta - resid_mean) / resid_sd
-    onas_pct = (1.0 - normal_cdf(raw_z)) * 100.0
-
-    if onas_pct < 20:
-        cat = "Markedly accelerated aging"
-    elif onas_pct < 40:
-        cat = "Mildly accelerated aging"
-    elif onas_pct < 70:
-        cat = "Age-appropriate optic nerve"
-    else:
-        cat = "Younger-than-average / robust optic nerve"
-
-    return float(delta), float(onas_pct), float(raw_z), cat
+def score_color_percentile(p: float) -> str:
+    """Blue-white-red color depending on percentile (low is bad)."""
+    if p is None or math.isnan(p):
+        return "#FFFFFF"
+    if p < 20:
+        return "#ff4b4b"      # red (worst)
+    if p < 40:
+        return "#ffa94b"      # orange
+    if p < 60:
+        return "#ffffff"      # white
+    if p < 80:
+        return "#74c0fc"      # light blue
+    return "#4dabf7"          # strong blue (best)
 
 
-@st.cache_resource(show_spinner=True)
-def build_shap_explainer(_model):
-    return shap.TreeExplainer(_model)
+def score_color_delta(delta: float) -> str:
+    """Color for Δage (older vs younger)."""
+    if delta is None or math.isnan(delta):
+        return "#FFFFFF"
+    if delta > 10:
+        return "#ff4b4b"
+    if delta > 5:
+        return "#ffa94b"
+    if delta > -5:
+        return "#ffffff"
+    if delta > -10:
+        return "#74c0fc"
+    return "#4dabf7"
 
 
-def clamp(value, vmin=-1.0, vmax=1.0):
-    return max(vmin, min(vmax, value))
-
-
-def rwb_color_from_score(score: float) -> str:
-    """
-    score ∈ [-1,1]
-      -1 → red (worst)
-       0 → white
-      +1 → blue (best)
-    """
-    s = clamp(score, -1.0, 1.0)
-    white = (255, 255, 255)
-    red = (220, 50, 50)
-    blue = (80, 140, 255)
-
-    if s >= 0:
-        r = int(white[0] + (blue[0] - white[0]) * s)
-        g = int(white[1] + (blue[1] - white[1]) * s)
-        b = int(white[2] + (blue[2] - white[2]) * s)
-    else:
-        t = -s
-        r = int(red[0] + (white[0] - red[0]) * t)
-        g = int(red[1] + (white[1] - red[1]) * t)
-        b = int(red[2] + (white[2] - red[2]) * t)
-
-    return f"#{r:02x}{g:02x}{b:02x}"
-
-
-def colored_metric(label: str, value_str: str, color: str):
-    """
-    Dark card + 컬러 숫자
-    """
+def render_big_metric(label: str, value_str: str, color: str, help_text: str = ""):
+    """Single large metric card with colored text."""
     st.markdown(
         f"""
         <div style="
-            padding:0.7rem 0.9rem;
-            border-radius:0.9rem;
-            border:1px solid #444444;
-            background-color:#111111;
-            ">
-          <div style="font-size:0.8rem;color:#dddddd;margin-bottom:0.2rem;">
+            background-color:#111827;
+            border-radius:12px;
+            padding:18px 20px;
+            border:1px solid #374151;
+            height:100%;
+        ">
+          <div style="font-size:0.9rem; color:#9ca3af; margin-bottom:6px;">
             {label}
           </div>
-          <div style="font-size:1.6rem;font-weight:700;color:{color};">
+          <div style="font-size:2.2rem; font-weight:700; color:{color};">
             {value_str}
           </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def gradient_bar(label_left: str, label_mid: str, label_right: str):
-    """
-    Red–white–blue horizontal bar 설명용.
-    """
-    st.markdown(
-        f"""
-        <div style="
-            margin-top:0.5rem;
-            margin-bottom:0.5rem;
-            ">
-          <div style="
-              height:18px;
-              border-radius:10px;
-              border:1px solid #555555;
-              background: linear-gradient(90deg,
-                  #dc3232 0%, #ffffff 50%, #508cff 100%);
-              ">
-          </div>
-          <div style="display:flex;
-              justify-content:space-between;
-              font-size:0.75rem;
-              color:#cccccc;
-              margin-top:0.25rem;">
-            <span>{label_left}</span>
-            <span>{label_mid}</span>
-            <span>{label_right}</span>
+          <div style="font-size:0.80rem; color:#9ca3af; margin-top:4px;">
+            {help_text}
           </div>
         </div>
         """,
@@ -340,484 +177,357 @@ def gradient_bar(label_left: str, label_mid: str, label_right: str):
     )
 
 
-def make_rnfl_gc_figure(rnfl_contrib, gc_contrib):
+def build_regional_vulnerability_plot(
+    rnfl_shap: np.ndarray,
+    gcipl_shap: np.ndarray,
+):
     """
-    Circular maps:
-      - Left  : macular GCIPL (right eye, temporal = 화면 좌측)
-      - Right : optic disc RNFL clock-hour (right eye)
+    Create polar maps for RNFL clock-hour and GCIPL sector contribution.
+
+    오른눈(OD) 기준:
+      - 플롯 왼쪽: 시신경유두 (ONH) RNFL 12H
+      - 플롯 오른쪽: 황반 GCIPL 6 sectors
+      - 컬러바 중앙이 0, warm = optic nerve older (worse), cool = younger (better)
     """
-    rnfl_labels = list(rnfl_contrib.keys())
-    rnfl_vals = np.array(list(rnfl_contrib.values()))
+    # RNFL 12H
+    rnfl_vals = rnfl_shap
+    # GCIPL 6 sectors : [TempSup, Sup, NasSup, NasInf, Inf, TempInf]
+    gc_vals = gcipl_shap
 
-    gc_labels = list(gc_contrib.keys())
-    gc_vals = np.array(list(gc_contrib.values()))
+    vmax = max(np.max(np.abs(rnfl_vals)), np.max(np.abs(gc_vals)), 1e-6)
+    norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
 
-    max_abs = max(np.max(np.abs(rnfl_vals)), np.max(np.abs(gc_vals)))
-    if max_abs == 0:
-        max_abs = 1.0
+    fig = plt.figure(figsize=(9, 4))
+    fig.patch.set_facecolor("#111827")
 
-    cmap = plt.get_cmap("coolwarm")
-    norm = plt.Normalize(vmin=-max_abs, vmax=max_abs)
+    # RNFL clock-hour (left)
+    ax1 = fig.add_subplot(1, 2, 1, polar=True)
+    ax1.set_facecolor("#111827")
 
-    fig = plt.figure(figsize=(10, 5))
-    gs = fig.add_gridspec(1, 3, width_ratios=[1, 0.08, 1])
+    # 우안 기준: temporal 쪽이 왼쪽(9H), nasal이 오른쪽(3H) 에 오도록 설정
+    # theta=0을 nasal (3H) 로 두고, 시계방향으로 진행
+    num = 12
+    theta = np.linspace(0, 2 * pi, num + 1)
+    width = 2 * pi / num
+    # RNFL shap 값을 1H..12H 순서로 받았다고 가정
+    for i in range(num):
+        val = rnfl_vals[i]
+        start = theta[i]
+        ax1.bar(
+            start,
+            1.0,
+            width=width,
+            bottom=0.0,
+            color=plt.cm.coolwarm(norm(val)),
+            edgecolor="#111827",
+            linewidth=1.0,
+            align="edge",
+        )
 
-    # ----- GCIPL (macula, left; temporal = left, nasal = right) -----
-    ax_gc = fig.add_subplot(gs[0, 0], polar=True)
-    m = len(gc_labels)
-    theta_g = np.linspace(0, 2 * np.pi, m, endpoint=False)
-    width_g = 2 * np.pi / m
+    # tick labels (우안 기준)
+    hour_labels = ["3H", "2H", "1H", "12H", "11H", "10H", "9H", "8H", "7H", "6H", "5H", "4H"]
+    ax1.set_xticks(theta[:-1] + width / 2)
+    ax1.set_xticklabels(hour_labels, color="white", fontsize=9)
+    ax1.set_yticklabels([])
+    ax1.set_title("RNFL clock-hour\ncontribution (OD)", color="white", fontsize=11, pad=10)
 
-    # 0 rad at West(좌측) so temporal sectors appear on the left side
-    ax_gc.set_theta_zero_location("W")
-    ax_gc.set_theta_direction(-1)
+    # GCIPL sectors (right)
+    ax2 = fig.add_subplot(1, 2, 2, polar=True)
+    ax2.set_facecolor("#111827")
 
-    colors_gc = cmap(norm(gc_vals))
-    ax_gc.bar(
-        theta_g,
-        np.ones(m),
-        width=width_g,
-        color=colors_gc,
-        edgecolor="k",
-        linewidth=0.5,
+    # 6 sectors: TempSup, Sup, NasSup, NasInf, Inf, TempInf
+    num_gc = 6
+    theta_gc = np.linspace(0, 2 * pi, num_gc + 1)
+    width_gc = 2 * pi / num_gc
+    for i in range(num_gc):
+        val = gc_vals[i]
+        start = theta_gc[i]
+        ax2.bar(
+            start,
+            1.0,
+            width=width_gc,
+            bottom=0.0,
+            color=plt.cm.coolwarm(norm(val)),
+            edgecolor="#111827",
+            linewidth=1.0,
+            align="edge",
+        )
+
+    # 라벨: 우안 기준으로 temporal이 왼쪽, nasal이 오른쪽
+    gc_labels = ["TempSup", "Sup", "NasSup", "NasInf", "Inf", "TempInf"]
+    ax2.set_xticks(theta_gc[:-1] + width_gc / 2)
+    ax2.set_xticklabels(gc_labels, color="white", fontsize=9)
+    ax2.set_yticklabels([])
+    ax2.set_title("GCIPL sector\ncontribution (OD)", color="white", fontsize=11, pad=10)
+
+    # 가운데 세로 컬러바
+    cax = fig.add_axes([0.47, 0.15, 0.02, 0.7])  # [left, bottom, width, height]
+    cb = plt.colorbar(
+        plt.cm.ScalarMappable(norm=norm, cmap="coolwarm"),
+        cax=cax,
     )
+    cb.ax.set_ylabel("SHAP value\n(impact on optic nerve age)", color="white", fontsize=9)
+    cb.ax.yaxis.set_tick_params(color="white")
+    plt.setp(plt.getp(cb.ax.axes, "yticklabels"), color="white", fontsize=8)
 
-    ax_gc.set_xticks(theta_g)
-    ax_gc.set_xticklabels(gc_labels, fontsize=9)
-    ax_gc.set_yticklabels([])
-    ax_gc.set_title("GCIPL sector contribution (macula, OD)", fontsize=11, color="w")
-
-    # ----- RNFL 12 clock-hour (disc, right) -----
-    ax_rnfl = fig.add_subplot(gs[0, 2], polar=True)
-    n = len(rnfl_labels)
-    theta = np.linspace(0, 2 * np.pi, n, endpoint=False)
-    width = 2 * np.pi / n
-
-    ax_rnfl.set_theta_zero_location("N")  # 12H at top
-    ax_rnfl.set_theta_direction(-1)       # clockwise
-
-    colors_rnfl = cmap(norm(rnfl_vals))
-    ax_rnfl.bar(
-        theta,
-        np.ones(n),
-        width=width,
-        color=colors_rnfl,
-        edgecolor="k",
-        linewidth=0.5,
-    )
-
-    ax_rnfl.set_xticks(theta)
-    ax_rnfl.set_xticklabels(rnfl_labels, fontsize=9)
-    ax_rnfl.set_yticklabels([])
-    ax_rnfl.set_title("RNFL clock-hour contribution (optic disc, OD)", fontsize=11, color="w")
-
-    # ----- Color bar between the two -----
-    ax_cbar = fig.add_subplot(gs[0, 1])
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-
-    cbar = fig.colorbar(sm, cax=ax_cbar)
-    cbar.set_ticks([-max_abs, 0.0, max_abs])
-    cbar.set_ticklabels(
-        ["Younger / thicker\n(protective)",
-         "Neutral",
-         "Older / thinner\n(vulnerable)"]
-    )
-    cbar.ax.tick_params(labelsize=7, color="w")
-    cbar.ax.yaxis.set_tick_params(color="w")
-    for spine in cbar.ax.spines.values():
-        spine.set_edgecolor("w")
-    cbar.set_label("SHAP value\n(impact on optic nerve age)", fontsize=8, color="w")
-
-    fig.patch.set_facecolor("#000000")
-    for ax in [ax_gc, ax_rnfl]:
-        ax.set_facecolor("#000000")
-        for spine in ax.spines.values():
-            spine.set_edgecolor("w")
-        ax.tick_params(colors="w")
-
-    fig.tight_layout()
+    plt.tight_layout()
     return fig
 
 
-# ============================================================
-# 3. LOAD MODEL & NORMATIVE DB
-# ============================================================
+# -----------------------------
+# 3. Main UI
+# -----------------------------
+def main():
+    st.set_page_config(
+        page_title="Optic Age — Optic Nerve Biological Aging Calculator",
+        page_icon="🧠",
+        layout="wide",
+    )
 
-with st.spinner("Loading model and KNHANES-derived normative database..."):
-    model, feature_cols = load_model_and_features()
-    super_normal_df, rnfl_mean, rnfl_sd = load_supernormal_and_normative(feature_cols)
+    # Dark theme background adjustment (for embedded matplotlib)
+    plt.style.use("dark_background")
 
-    X_super = super_normal_df[feature_cols].values
-    y_super = super_normal_df["age"].values
-    w_super = super_normal_df["wt3"].values
+    # ----- Header -----
+    st.markdown(
+        """
+        <h1 style="margin-bottom:0.2rem;">Optic Age™ — Optic Nerve Biological Aging Calculator</h1>
+        <p style="color:#9ca3af; margin-bottom:0.1rem;">
+          Developed by <b>Professor Young Kook Kim</b>, Seoul National University Hospital (SNUH)
+        </p>
+        <p style="color:#6b7280; font-size:0.85rem; margin-bottom:1.0rem;">
+          A machine-learning based clinical decision support tool estimating the biological aging
+          of the optic nerve using OCT metrics from KNHANES 2019–2021.
+        </p>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    y_hat_super = model.predict(X_super)
-    resid = y_hat_super - y_super
+    # Load model & summary parameters
+    with st.spinner("Loading model and KNHANES-derived summary parameters..."):
+        model, feature_cols = load_model_and_features()
+        rnfl_mean, rnfl_sd, onas_sigma = load_normative_params()
 
-    w_sum = np.sum(w_super)
-    resid_mean = float(np.sum(w_super * resid) / w_sum)
-    resid_var = float(np.sum(w_super * (resid - resid_mean) ** 2) / w_sum)
-    resid_sd = float(np.sqrt(resid_var))
+    st.success("Model and summary parameters loaded successfully.")
 
-    shap_explainer = build_shap_explainer(model)
+    # =============================
+    # 1. Patient input (OD only)
+    # =============================
+    st.markdown("### 1. Input Patient Data (Right Eye Only)")
 
-st.success("Model and KNHANES-derived norms loaded successfully.")
+    with st.form("input_form"):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            age = st.number_input("Chronological age (years)", 20, 90, 50)
+        with c2:
+            sex_label = st.selectbox("Sex", [("Male", 1), ("Female", 2)], format_func=lambda x: x[0])
+            sex = sex_label[1]
+        with c3:
+            al_r = st.number_input("Axial length AL_R (mm)", 20.0, 30.0, 24.0, step=0.1)
+        with c4:
+            disc_area = st.number_input("Disc area DISCAREA_OD (mm²)", 1.0, 4.0, 2.0, step=0.1)
 
-# ============================================================
-# 4. INPUT FORM
-# ============================================================
+        c5, c6 = st.columns(2)
+        with c5:
+            vcd = st.number_input("Vertical C/D ratio (VERTICAL_CD_RATIO_OD)", 0.0, 1.0, 0.4, step=0.01)
+        with c6:
+            rnfl_avg = st.number_input("Average RNFL thickness (RNFL_AVERAGE_OD, µm)", 50.0, 140.0, 95.0, step=0.5)
 
-st.subheader("1. Input Patient Data (Right Eye Only)")
-
-with st.form("input_form"):
-    col_left, col_right = st.columns(2)
-
-    # -------- Basic info & global OCT --------
-    with col_left:
-        chrono_age = st.number_input(
-            "Chronological age (years)",
-            min_value=20,
-            max_value=100,
-            value=50,
-        )
-
-        sex_label = st.radio(
-            "Sex", options=["Male", "Female"], index=0, horizontal=True
-        )
-        sex_code = 1 if sex_label == "Male" else 2
-
-        al_r = st.number_input(
-            "Axial length AL_R (mm)",
-            min_value=20.0,
-            max_value=30.0,
-            value=24.0,
-            step=0.1,
-        )
-
-        disc_area = st.number_input(
-            "Disc area (DISCAREA_OD, mm²)",
-            min_value=0.5,
-            max_value=4.0,
-            value=2.0,
-            step=0.1,
-        )
-
-        v_cdr = st.number_input(
-            "Vertical C/D ratio (VERTICAL_CD_RATIO_OD)",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.5,
-            step=0.01,
-        )
-
-        rnfl_avg = st.number_input(
-            "Global RNFL thickness (RNFL_AVERAGE_OD, µm)",
-            min_value=40.0,
-            max_value=150.0,
-            value=95.0,
-            step=0.5,
-        )
-
-        gc_avg = st.number_input(
-            "Global GCIPL thickness (GC_AVERAGE_OD, µm)",
-            min_value=40.0,
-            max_value=120.0,
-            value=80.0,
-            step=0.5,
-        )
-
-        gc_min = st.number_input(
-            "GCIPL minimum thickness (GC_MINIMUM_OD, µm)",
-            min_value=30.0,
-            max_value=110.0,
-            value=70.0,
-            step=0.5,
-        )
-
-    # -------- RNFL clock-hour & GCIPL sectors --------
-    with col_right:
-        st.markdown("**RNFL clock-hour thickness (OD)**")
-        cols_clock = st.columns(4)
-        clock_inputs = {}
-        default_clock = [95, 100, 100, 105, 110, 110, 95, 85, 80, 75, 80, 90]
-
-        for i in range(12):
-            with cols_clock[i % 4]:
-                label = f"{i+1}H (CLOCKHOUR_{i+1}_OD)"
-                clock_inputs[i + 1] = st.number_input(
-                    label,
-                    min_value=30.0,
-                    max_value=200.0,
-                    value=float(default_clock[i]),
-                    step=0.5,
+        st.markdown("#### RNFL 12 Clock-Hour (µm)")
+        rnfl_cols = []
+        rnfl_row1 = st.columns(6)
+        rnfl_row2 = st.columns(6)
+        for i in range(1, 7):
+            with rnfl_row1[i - 1]:
+                rnfl_cols.append(
+                    st.number_input(f"{i}H", 40.0, 180.0, 100.0, step=0.5, key=f"rnfl_{i}")
+                )
+        for i in range(7, 13):
+            with rnfl_row2[i - 7]:
+                rnfl_cols.append(
+                    st.number_input(f"{i}H", 40.0, 180.0, 100.0, step=0.5, key=f"rnfl_{i}")
                 )
 
-        st.markdown("**GCIPL sector thickness (OD)**")
-        gc_temp_sup = st.number_input(
-            "GC_TEMPSUP_OD (µm)",
-            min_value=40.0,
-            max_value=120.0,
-            value=80.0,
-            step=0.5,
-        )
-        gc_sup = st.number_input(
-            "GC_SUP_OD (µm)",
-            min_value=40.0,
-            max_value=120.0,
-            value=82.0,
-            step=0.5,
-        )
-        gc_nas_sup = st.number_input(
-            "GC_NASSUP_OD (µm)",
-            min_value=40.0,
-            max_value=120.0,
-            value=81.0,
-            step=0.5,
-        )
-        gc_nas_inf = st.number_input(
-            "GC_NASINF_OD (µm)",
-            min_value=40.0,
-            max_value=120.0,
-            value=79.0,
-            step=0.5,
-        )
-        gc_inf = st.number_input(
-            "GC_INF_OD (µm)",
-            min_value=40.0,
-            max_value=120.0,
-            value=78.0,
-            step=0.5,
-        )
-        gc_temp_inf = st.number_input(
-            "GC_TEMPINF_OD (µm)",
-            min_value=40.0,
-            max_value=120.0,
-            value=77.0,
-            step=0.5,
-        )
+        st.markdown("#### GCIPL sectors (µm)")
+        g1, g2, g3 = st.columns(3)
+        g4, g5, g6 = st.columns(3)
+        gc_tempsup = g1.number_input("TempSup", 40.0, 120.0, 80.0, step=0.5)
+        gc_sup = g2.number_input("Sup", 40.0, 120.0, 80.0, step=0.5)
+        gc_nassup = g3.number_input("NasSup", 40.0, 120.0, 80.0, step=0.5)
+        gc_nasinf = g4.number_input("NasInf", 40.0, 120.0, 80.0, step=0.5)
+        gc_inf = g5.number_input("Inf", 40.0, 120.0, 80.0, step=0.5)
+        gc_tempinf = g6.number_input("TempInf", 40.0, 120.0, 80.0, step=0.5)
 
-    submitted = st.form_submit_button("Run Optic Age™ Analysis")
+        gc_min = st.number_input("GCIPL minimum (GC_MINIMUM_OD, µm)", 40.0, 120.0, 70.0, step=0.5)
+        gc_avg = st.number_input("GCIPL average (GC_AVERAGE_OD, µm)", 40.0, 120.0, 80.0, step=0.5)
 
-# ============================================================
-# 5. PREDICTION & VISUALIZATION
-# ============================================================
+        submitted = st.form_submit_button("Run Optic Age™ model")
 
-if submitted:
-    # ----- 5.1 assemble patient row -----
-    patient_dict = {}
+    if not submitted:
+        st.stop()
 
-    for i in range(1, 13):
-        colname = f"CLOCKHOUR_{i}_OD"
-        if colname in feature_cols:
-            patient_dict[colname] = float(clock_inputs[i])
-
-    mapping_gc = {
-        "GC_TEMPSUP_OD": gc_temp_sup,
-        "GC_SUP_OD": gc_sup,
-        "GC_NASSUP_OD": gc_nas_sup,
-        "GC_NASINF_OD": gc_nas_inf,
-        "GC_INF_OD": gc_inf,
-        "GC_TEMPINF_OD": gc_temp_inf,
-        "GC_MINIMUM_OD": gc_min,
-        "RNFL_AVERAGE_OD": rnfl_avg,
-        "GC_AVERAGE_OD": gc_avg,
-        "DISCAREA_OD": disc_area,
-        "VERTICAL_CD_RATIO_OD": v_cdr,
+    # =============================
+    # 2. Build feature vector
+    # =============================
+    patient = {
+        "age": age,
+        "sex": sex,
         "AL_R": al_r,
-        "sex": sex_code,
+        "DISCAREA_OD": disc_area,
+        "VERTICAL_CD_RATIO_OD": vcd,
+        "RNFL_AVERAGE_OD": rnfl_avg,
+        "GC_MINIMUM_OD": gc_min,
+        "GC_AVERAGE_OD": gc_avg,
+        "GC_TEMPSUP_OD": gc_tempsup,
+        "GC_SUP_OD": gc_sup,
+        "GC_NASSUP_OD": gc_nassup,
+        "GC_NASINF_OD": gc_nasinf,
+        "GC_INF_OD": gc_inf,
+        "GC_TEMPINF_OD": gc_tempinf,
     }
-    for col, val in mapping_gc.items():
-        if col in feature_cols:
-            patient_dict[col] = float(val)
+    for i, val in enumerate(rnfl_cols, start=1):
+        patient[f"CLOCKHOUR_{i}_OD"] = val
 
-    for col in feature_cols:
-        if col not in patient_dict:
-            patient_dict[col] = np.nan
+    # align with training feature order
+    x_vec = np.array([[patient[c] for c in feature_cols]], dtype=float)
 
-    patient_df = pd.DataFrame([[patient_dict[c] for c in feature_cols]],
-                              columns=feature_cols)
+    # =============================
+    # 3. Predict & compute scores
+    # =============================
+    predicted_age = float(model.predict(x_vec)[0])
+    delta_age = predicted_age - age
 
-    # ----- 5.2 predictions & scores -----
-    pred_age = float(model.predict(patient_df.values)[0])
-
+    onas_percentile, onas_z = compute_onas(delta_age, onas_sigma)
     rnfl_z, rnfl_pct = compute_rnfl_z_and_percentile(rnfl_avg, rnfl_mean, rnfl_sd)
-    delta_age, onas_pct, onas_z, onas_cat = compute_onas(
-        pred_age, chrono_age, resid_mean, resid_sd
+
+    # =============================
+    # 4. Display Optic Age & ONAS
+    # =============================
+    st.markdown("### 2. Optic Nerve Age & Optic Nerve Aging Score (ONAS)")
+
+    colA, colB, colC = st.columns(3)
+
+    # Predicted optic nerve age
+    colA_color = score_color_delta(delta_age)
+    render_big_metric(
+        "Predicted optic nerve age (years)",
+        f"{predicted_age:.1f}",
+        colA_color,
+        help_text="Estimated biological age of the optic nerve based on OCT features.",
     )
 
-    shap_values = shap_explainer(patient_df)
-    shap_array = shap_values.values[0]
-    feature_to_shap = {f: v for f, v in zip(feature_cols, shap_array)}
-
-    rnfl_contrib = {
-        f"{i}H": feature_to_shap.get(f"CLOCKHOUR_{i}_OD", 0.0)
-        for i in range(1, 13)
-    }
-
-    gc_cols = [
-        "GC_TEMPSUP_OD",
-        "GC_SUP_OD",
-        "GC_NASSUP_OD",
-        "GC_NASINF_OD",
-        "GC_INF_OD",
-        "GC_TEMPINF_OD",
-    ]
-    gc_label_map = {
-        "GC_TEMPSUP_OD": "TempSup",
-        "GC_SUP_OD": "Sup",
-        "GC_NASSUP_OD": "NasSup",
-        "GC_NASINF_OD": "NasInf",
-        "GC_INF_OD": "Inf",
-        "GC_TEMPINF_OD": "TempInf",
-    }
-    gc_contrib = {gc_label_map[c]: feature_to_shap.get(c, 0.0) for c in gc_cols}
-
-    # ----- 5.3 color scores -----
-    goodness_delta = -delta_age / 10.0          # ΔAge ↑ → worse
-    goodness_onas = (onas_pct - 50.0) / 50.0 if onas_pct is not None else 0.0
-    goodness_pred = goodness_delta
-    goodness_rnfl_z = rnfl_z / 2.0 if rnfl_z is not None else 0.0
-    goodness_rnfl_pct = (rnfl_pct - 50.0) / 50.0 if rnfl_pct is not None else 0.0
-
-    # ========================================================
-    # 2. Optic Nerve Age & ONAS
-    # ========================================================
-    st.subheader("2. Optic Nerve Age & Optic Nerve Aging Score (ONAS)")
-
-    col_a, col_b, col_c = st.columns(3)
-
-    with col_a:
-        color_pred = rwb_color_from_score(goodness_pred)
-        colored_metric(
-            "Predicted optic nerve age (years)",
-            f"{pred_age:.1f}",
-            color_pred,
-        )
-
-        color_delta = rwb_color_from_score(goodness_delta)
-        colored_metric(
-            "ΔAge (optic − chronological, years)",
-            f"{delta_age:+.1f}",
-            color_delta,
-        )
-
-    with col_b:
-        if onas_pct is not None:
-            color_onas = rwb_color_from_score(goodness_onas)
-            colored_metric(
-                "Optic Nerve Aging Score (ONAS) percentile\n(higher = stronger / more resilient)",
-                f"{onas_pct:.1f} %",
-                color_onas,
-            )
-        else:
-            colored_metric(
-                "Optic Nerve Aging Score (ONAS) percentile",
-                "N/A",
-                "#cccccc",
-            )
-
-    with col_c:
-        if rnfl_z is not None:
-            color_rnfl_z = rwb_color_from_score(goodness_rnfl_z)
-            colored_metric(
-                "RNFL Z-score vs super-normal",
-                f"{rnfl_z:.2f}",
-                color_rnfl_z,
-            )
-
-            color_rnfl_pct = rwb_color_from_score(goodness_rnfl_pct)
-            colored_metric(
-                "RNFL thickness percentile (lower = thinner / more vulnerable)",
-                f"{rnfl_pct:.1f} %",
-                color_rnfl_pct,
-            )
-        else:
-            colored_metric("RNFL Z-score vs super-normal", "N/A", "#cccccc")
-            colored_metric("RNFL thickness percentile", "N/A", "#cccccc")
-
-    # horizontal legend for section 2
-    gradient_bar(
-        "Weaker / older optic nerve",
-        "Average",
-        "Stronger / younger optic nerve",
+    # ΔAge
+    colB_color = score_color_delta(delta_age)
+    render_big_metric(
+        "ΔAge (optic − chronological, years)",
+        f"{delta_age:+.1f}",
+        colB_color,
+        help_text="Positive values indicate an older-than-expected optic nerve; "
+        "negative values indicate a younger, more resilient nerve.",
     )
 
-    if onas_pct is not None:
-        worse_than = 100.0 - onas_pct
-        st.write(f"**ONAS category:** {onas_cat}")
-        st.caption(
-            f"ONAS percentile is calculated from KNHANES super-normal eyes. "
-            f"A value of **{onas_pct:.1f}%** means this optic nerve appears more aged / weaker "
-            f"than about **{worse_than:.1f}%** of the reference population. "
-            f"**Lower ONAS percentile indicates a weaker / more vulnerable optic nerve**, "
-            f"while higher percentile indicates a stronger and more resilient optic nerve."
-        )
-    else:
-        st.write("**ONAS category:** Not available (residual SD invalid).")
-
-    st.markdown("---")
-
-    # ========================================================
-    # 3. RNFL Normative Position
-    # ========================================================
-    st.subheader("3. RNFL Normative Position (KNHANES-based)")
-
-    if rnfl_z is not None:
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            colored_metric("RNFL_AVERAGE_OD (µm)", f"{rnfl_avg:.1f}",
-                           rwb_color_from_score(goodness_rnfl_pct))
-        with col2:
-            colored_metric("RNFL Z-score vs super-normal",
-                           f"{rnfl_z:.2f}",
-                           rwb_color_from_score(goodness_rnfl_z))
-        with col3:
-            colored_metric(
-                "RNFL thickness percentile (lower = thinner / more vulnerable)",
-                f"{rnfl_pct:.1f} %",
-                rwb_color_from_score(goodness_rnfl_pct),
-            )
-
-        gradient_bar(
-            "Thinner / weaker RNFL",
-            "Average thickness",
-            "Thicker / more robust RNFL",
-        )
-
-        thinner_than = 100.0 - rnfl_pct
-        st.caption(
-            f"Percentile is based on KNHANES super-normal eyes "
-            f"(OD, age ≥20, no glaucoma or major retinal disease, IOP ≤21 mmHg, "
-            f"AL_R ≤26.0 mm, RNFL_AVERAGE_OD ≥70 µm). "
-            f"A value of **{rnfl_pct:.1f}%** means this RNFL is thinner than about "
-            f"**{thinner_than:.1f}%** of the reference population. "
-            f"**Lower percentile indicates thinner / weaker RNFL and more advanced structural loss.**"
-        )
-    else:
-        st.write("RNFL normative statistics are not available for this input.")
-
-    st.markdown("---")
-
-    # ========================================================
-    # 4. Regional Vulnerability Map
-    # ========================================================
-    st.subheader("4. Regional Vulnerability Map (Feature Importance)")
-
-    fig = make_rnfl_gc_figure(rnfl_contrib, gc_contrib)
-    st.pyplot(fig, use_container_width=True)
-
-    worst_rnfl = max(rnfl_contrib, key=lambda k: rnfl_contrib[k])
-    worst_gc = max(gc_contrib, key=lambda k: gc_contrib[k])
+    # ONAS percentile
+    onas_color = score_color_percentile(onas_percentile)
+    render_big_metric(
+        "Optic Nerve Aging Score percentile (ONAS, higher = stronger / more resilient)",
+        f"{onas_percentile:.1f} %",
+        onas_color,
+        help_text=(
+            "ONAS percentile is calculated from the estimated distribution of ΔAge in KNHANES-based "
+            "super-normal eyes. Lower ONAS percentile indicates a weaker or more vulnerable optic nerve; "
+            "higher percentile indicates a stronger, more resilient nerve."
+        ),
+    )
 
     st.markdown(
-        f"- **Macula (left circle, GCIPL):** The reddest sector (highest contribution to aging) is **{worst_gc}**.\n"
-        f"- **Optic disc (right circle, RNFL):** The darkest red clock-hour is **{worst_rnfl}H**, "
-        f"indicating the region that contributes most to increasing the optic nerve age."
+        """
+        **ONAS category explanation**  
+        * Lower ONAS percentile → more accelerated aging / greater vulnerability.  
+        * Higher ONAS percentile → slower aging / more resilient optic nerve.
+        """,
     )
-    st.caption(
-        "For this **right eye**, the **left circular map** represents macular GCIPL sectors "
-        "(temporal on the left side, nasal on the right), and the **right circular map** represents "
-        "optic disc RNFL clock-hour sectors. Red sectors make the optic nerve appear **older / thinner / more vulnerable**, "
-        "while blue sectors make it appear **younger / thicker / structurally preserved**."
+
+    # =============================
+    # 5. RNFL normative position
+    # =============================
+    st.markdown("### 3. RNFL Normative Position (KNHANES-based)")
+
+    c1, c2, c3 = st.columns(3)
+
+    render_big_metric(
+        "RNFL_AVERAGE_OD (µm)",
+        f"{rnfl_avg:.1f}",
+        "#e5e7eb",
+        help_text="Average peripapillary RNFL thickness of the right eye.",
     )
+
+    z_color = score_color_delta(-rnfl_z)  # more negative z = worse
+    render_big_metric(
+        "RNFL Z-score vs super-normal",
+        f"{rnfl_z:+.2f}",
+        z_color,
+        help_text=(
+            "Z-score relative to KNHANES super-normal RNFL distribution. "
+            "Negative values indicate thinner-than-average RNFL."
+        ),
+    )
+
+    pct_color = score_color_percentile(rnfl_pct)
+    render_big_metric(
+        "RNFL thickness percentile (lower = thinner / more vulnerable)",
+        f"{rnfl_pct:.1f} %",
+        pct_color,
+        help_text=(
+            "Percentile based on KNHANES super-normal RNFL thickness. "
+            "A lower percentile means the RNFL is thinner than most of the reference population, "
+            "suggesting more advanced structural loss."
+        ),
+    )
+
+    st.markdown(
+        f"""
+        RNFL percentiles are computed using a normal approximation with mean ≈ {rnfl_mean:.1f} µm and
+        standard deviation ≈ {rnfl_sd:.1f} µm derived from KNHANES super-normal eyes (age ≥20 years,
+        without glaucoma or major retinal disease).
+        """
+    )
+
+    # =============================
+    # 6. Regional vulnerability maps (feature importance)
+    # =============================
+    st.markdown("### 4. Regional Vulnerability Map (Feature Importance)")
+
+    # ---- SHAP computation ----
+    try:
+        import shap  # type: ignore
+
+        @st.cache_resource
+        def _build_shap_explainer(_model):
+            return shap.TreeExplainer(_model)
+
+        explainer = _build_shap_explainer(model)
+        shap_values = explainer.shap_values(x_vec)[0]  # 1 x n_features
+
+        # map to RNFL & GCIPL
+        shap_dict = {feat: val for feat, val in zip(feature_cols, shap_values)}
+        rnfl_shap = np.array([shap_dict.get(f, 0.0) for f in RNFL_FEATURES])
+        gcipl_shap = np.array([shap_dict.get(f, 0.0) for f in GCIPL_FEATURES])
+
+        fig = build_regional_vulnerability_plot(rnfl_shap, gcipl_shap)
+        st.pyplot(fig, use_container_width=True)
+
+        st.caption(
+            "Red regions contribute to an older (more vulnerable) optic nerve age, "
+            "while blue regions contribute to a younger (more resilient) optic nerve. "
+            "Plots are oriented for the right eye (OD): temporal retina is displayed on the left, "
+            "nasal on the right."
+        )
+    except Exception as e:
+        st.warning(
+            "SHAP-based regional vulnerability map could not be generated "
+            f"(missing `shap` package or other error: {e}). "
+            "The main Optic Age™ scores above remain valid."
+        )
+
+
+if __name__ == "__main__":
+    main()
