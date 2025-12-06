@@ -1,2 +1,2 @@
-age_mean,age_sd,rnfl_mean,rnfl_sd
-0,0,100,10
+rnfl_mean,rnfl_sd,onas_sigma
+94.87955507381027,9.483574165895513,5.212804584554714
