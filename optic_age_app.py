@@ -42,7 +42,6 @@ GCIPL_FEATURES = [
     "GC_TEMPINF_OD",
 ]
 
-
 # -----------------------------
 # 1. Cached loaders
 # -----------------------------
@@ -222,7 +221,6 @@ def build_regional_vulnerability_plot(rnfl_shap: np.ndarray, gcipl_shap: np.ndar
     cb_ax.set_ylabel("SHAP value\n(impact on optic nerve age)", color="white", fontsize=9)
     cb_ax.yaxis.set_tick_params(color="white")
     plt.setp(cb_ax.get_yticklabels(), color="white", fontsize=8)
-    # Top / bottom labels
     cb_ax.text(
         0.5,
         1.05,
@@ -264,8 +262,8 @@ def build_regional_vulnerability_plot(rnfl_shap: np.ndarray, gcipl_shap: np.ndar
             align="edge",
         )
 
-    # Labels arranged so that 12H is superior, 6H inferior
-    hour_labels = ["12H", "1H", "2H", "3H", "4H", "5H", "6H", "7H", "8H", "9H", "10H", "11H"]
+    hour_labels = ["12H", "1H", "2H", "3H", "4H", "5H",
+                   "6H", "7H", "8H", "9H", "10H", "11H"]
     ax2.set_xticks(theta[:-1] + width / 2)
     ax2.set_xticklabels(hour_labels, color="white", fontsize=9)
     ax2.set_yticklabels([])
@@ -302,7 +300,6 @@ def main():
     st.markdown(
         """
         <style>
-        /* Yellow primary button */
         div.stButton > button {
             background-color: #facc15 !important;
             color: #000000 !important;
@@ -353,28 +350,31 @@ def main():
     st.markdown("### 1. Input Patient Data (Right Eye Only, age 40–79)")
 
     with st.form("input_form"):
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
+        r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+        with r1c1:
             age = st.number_input("Chronological age (years)", 40, 79, 60)
-        with c2:
+        with r1c2:
             sex_label = st.selectbox(
                 "Sex",
                 [("Male", 1), ("Female", 2)],
                 format_func=lambda x: x[0],
             )
             sex = sex_label[1]
-        with c3:
-            # label without code
+        with r1c3:
             al_r = st.number_input("Axial length (mm)", 20.0, 30.0, 24.0, step=0.1)
-        with c4:
+        with r1c4:
             disc_area = st.number_input("Disc area (mm²)", 1.0, 4.0, 2.0, step=0.1)
 
-        c5, c6, c7 = st.columns(3)
-        with c5:
+        r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+        with r2c1:
+            disc_diam = st.number_input(
+                "Disc diameter (mm)", 1.0, 4.0, 1.8, step=0.1
+            )
+        with r2c2:
             vcd = st.number_input("Vertical C/D ratio", 0.0, 1.0, 0.4, step=0.01)
-        with c6:
+        with r2c3:
             rimarea = st.number_input("Rim area (mm²)", 0.5, 3.0, 1.5, step=0.05)
-        with c7:
+        with r2c4:
             cup_vol = st.number_input("Cup volume (mm³)", 0.0, 1.0, 0.2, step=0.01)
 
         st.markdown("#### RNFL 12 Clock-Hour (µm)")
@@ -384,12 +384,16 @@ def main():
         for i in range(1, 7):
             with row1[i - 1]:
                 rnfl_vals.append(
-                    st.number_input(f"{i}H", 40.0, 180.0, 100.0, step=0.5, key=f"rnfl_{i}")
+                    st.number_input(
+                        f"{i}H", 40.0, 180.0, 100.0, step=0.5, key=f"rnfl_{i}"
+                    )
                 )
         for i in range(7, 13):
             with row2[i - 7]:
                 rnfl_vals.append(
-                    st.number_input(f"{i}H", 40.0, 180.0, 100.0, step=0.5, key=f"rnfl_{i}")
+                    st.number_input(
+                        f"{i}H", 40.0, 180.0, 100.0, step=0.5, key=f"rnfl_{i}"
+                    )
                 )
 
         st.markdown("#### GCIPL sectors (µm)")
@@ -410,7 +414,9 @@ def main():
 
         with st.expander("Show / hide advanced parameters"):
             cmt = st.number_input("CMT_OD (µm)", 150.0, 400.0, 250.0, step=1.0)
-            avg_thk = st.number_input("AVERAGETHICKNESS_OD (µm)", 200.0, 350.0, 270.0, step=1.0)
+            avg_thk = st.number_input(
+                "AVERAGETHICKNESS_OD (µm)", 200.0, 350.0, 270.0, step=1.0
+            )
 
             quad_t = st.number_input("QUADRANT_T_OD (µm)", 40.0, 180.0, 110.0, step=0.5)
             quad_s = st.number_input("QUADRANT_S_OD (µm)", 40.0, 180.0, 120.0, step=0.5)
@@ -419,11 +425,21 @@ def main():
 
             rnfl_sup = st.number_input("RNFL_SUP_OD (µm)", 40.0, 180.0, 120.0, step=0.5)
             rnfl_inf = st.number_input("RNFL_INF_OD (µm)", 40.0, 180.0, 120.0, step=0.5)
-            rnfl_nsup = st.number_input("RNFL_NASSUP_OD (µm)", 40.0, 180.0, 90.0, step=0.5)
-            rnfl_ninf = st.number_input("RNFL_NASINF_OD (µm)", 40.0, 180.0, 90.0, step=0.5)
-            rnfl_tsup = st.number_input("RNFL_TEMPSUP_OD (µm)", 40.0, 180.0, 90.0, step=0.5)
-            rnfl_tinf = st.number_input("RNFL_TEMPINF_OD (µm)", 40.0, 180.0, 90.0, step=0.5)
-            rnfl_min = st.number_input("RNFL_MINIMUM_OD (µm)", 20.0, 120.0, 60.0, step=0.5)
+            rnfl_nsup = st.number_input(
+                "RNFL_NASSUP_OD (µm)", 40.0, 180.0, 90.0, step=0.5
+            )
+            rnfl_ninf = st.number_input(
+                "RNFL_NASINF_OD (µm)", 40.0, 180.0, 90.0, step=0.5
+            )
+            rnfl_tsup = st.number_input(
+                "RNFL_TEMPSUP_OD (µm)", 40.0, 180.0, 90.0, step=0.5
+            )
+            rnfl_tinf = st.number_input(
+                "RNFL_TEMPINF_OD (µm)", 40.0, 180.0, 90.0, step=0.5
+            )
+            rnfl_min = st.number_input(
+                "RNFL_MINIMUM_OD (µm)", 20.0, 120.0, 60.0, step=0.5
+            )
 
             or_tsup = st.number_input("OR_TEMPSUP_OD (µm)", 150.0, 350.0, 250.0, step=1.0)
             or_sup = st.number_input("OR_SUP_OD (µm)", 150.0, 350.0, 250.0, step=1.0)
@@ -434,28 +450,58 @@ def main():
             or_avg = st.number_input("OR_AVERAGE_OD (µm)", 150.0, 350.0, 250.0, step=1.0)
             or_min = st.number_input("OR_MINIMUM_OD (µm)", 150.0, 350.0, 200.0, step=1.0)
 
-            cube_thk = st.number_input("CUBEAVGTHICKNESS_ILMRPE_OD (µm)", 200.0, 350.0, 270.0, step=1.0)
-            cube_thk_fit = st.number_input(
-                "CUBEAVGTHICKNESS_ILMRPEFIT_OD (µm)", 200.0, 350.0, 270.0, step=1.0
+            cube_thk = st.number_input(
+                "CUBEAVGTHICKNESS_ILMRPE_OD (µm)", 200.0, 350.0, 270.0, step=1.0
             )
-            cube_vol = st.number_input("CUBEVOLUME_ILMRPE_OD (mm³)", 6.0, 14.0, 10.0, step=0.1)
+            cube_thk_fit = st.number_input(
+                "CUBEAVGTHICKNESS_ILMRPEFIT_OD (µm)",
+                200.0,
+                350.0,
+                270.0,
+                step=1.0,
+            )
+            cube_vol = st.number_input(
+                "CUBEVOLUME_ILMRPE_OD (mm³)", 6.0, 14.0, 10.0, step=0.1
+            )
             cube_vol_fit = st.number_input(
                 "CUBEVOLUME_ILMRPEFIT_OD (mm³)", 6.0, 14.0, 10.0, step=0.1
             )
-            c_ilmrpe = st.number_input("C_ILMRPE_OD (µm)", 150.0, 350.0, 250.0, step=1.0)
-            c_ilmrpe_fit = st.number_input("C_ILMRPEFIT_OD (µm)", 150.0, 350.0, 250.0, step=1.0)
+            c_ilmrpe = st.number_input(
+                "C_ILMRPE_OD (µm)", 150.0, 350.0, 250.0, step=1.0
+            )
+            c_ilmrpe_fit = st.number_input(
+                "C_ILMRPEFIT_OD (µm)", 150.0, 350.0, 250.0, step=1.0
+            )
 
             sfct = st.number_input("SFCT_OD (µm)", 100.0, 500.0, 250.0, step=1.0)
 
-            z_center = st.number_input("Z_CENTER_OD (µm)", 150.0, 350.0, 260.0, step=1.0)
-            z_ir = st.number_input("Z_INNERRIGHT_OD (µm)", 150.0, 350.0, 280.0, step=1.0)
-            z_is = st.number_input("Z_INNERSUPERIOR_OD (µm)", 150.0, 350.0, 280.0, step=1.0)
-            z_il = st.number_input("Z_INNERLEFT_OD (µm)", 150.0, 350.0, 280.0, step=1.0)
-            z_ii = st.number_input("Z_INNERINFERIOR_OD (µm)", 150.0, 350.0, 280.0, step=1.0)
-            z_or = st.number_input("Z_OUTERRIGHT_OD (µm)", 150.0, 350.0, 270.0, step=1.0)
-            z_os = st.number_input("Z_OUTERSUPERIOR_OD (µm)", 150.0, 350.0, 270.0, step=1.0)
-            z_ol = st.number_input("Z_OUTERLEFT_OD (µm)", 150.0, 350.0, 270.0, step=1.0)
-            z_oi = st.number_input("Z_OUTERINFERIOR_OD (µm)", 150.0, 350.0, 270.0, step=1.0)
+            z_center = st.number_input(
+                "Z_CENTER_OD (µm)", 150.0, 350.0, 260.0, step=1.0
+            )
+            z_ir = st.number_input(
+                "Z_INNERRIGHT_OD (µm)", 150.0, 350.0, 280.0, step=1.0
+            )
+            z_is = st.number_input(
+                "Z_INNERSUPERIOR_OD (µm)", 150.0, 350.0, 280.0, step=1.0
+            )
+            z_il = st.number_input(
+                "Z_INNERLEFT_OD (µm)", 150.0, 350.0, 280.0, step=1.0
+            )
+            z_ii = st.number_input(
+                "Z_INNERINFERIOR_OD (µm)", 150.0, 350.0, 280.0, step=1.0
+            )
+            z_or = st.number_input(
+                "Z_OUTERRIGHT_OD (µm)", 150.0, 350.0, 270.0, step=1.0
+            )
+            z_os = st.number_input(
+                "Z_OUTERSUPERIOR_OD (µm)", 150.0, 350.0, 270.0, step=1.0
+            )
+            z_ol = st.number_input(
+                "Z_OUTERLEFT_OD (µm)", 150.0, 350.0, 270.0, step=1.0
+            )
+            z_oi = st.number_input(
+                "Z_OUTERINFERIOR_OD (µm)", 150.0, 350.0, 270.0, step=1.0
+            )
 
         run_clicked = st.form_submit_button("Run Optic Age™ model")
 
@@ -475,7 +521,9 @@ def main():
     # 2. Derived features (age-adjusted)
     # =============================
     rnfl12_mean = float(np.mean(rnfl_vals))
-    gc6_mean = float(np.mean([gc_tempsup, gc_sup, gc_nassup, gc_nasinf, gc_inf, gc_tempinf]))
+    gc6_mean = float(
+        np.mean([gc_tempsup, gc_sup, gc_nassup, gc_nasinf, gc_inf, gc_tempinf])
+    )
 
     rnfl_params = age_adjust_params["rnfl12"]
     gc6_params = age_adjust_params["gc6"]
@@ -489,79 +537,90 @@ def main():
     # =============================
     # 3. Build patient feature dict
     # =============================
-    patient = {}
+    patient: dict[str, float] = {}
 
     # core variables
-    patient["sex"] = sex
-    patient["AL_R"] = al_r
-    patient["DISCAREA_OD"] = disc_area
-    patient["VERTICAL_CD_RATIO_OD"] = vcd
-    patient["RIMAREA_OD"] = rimarea
-    patient["CUPVOLUME_OD"] = cup_vol
+    patient["sex"] = float(sex)
+    patient["AL_R"] = float(al_r)
+    patient["DISCAREA_OD"] = float(disc_area)
+    patient["DISK_DIAMETER_OD"] = float(disc_diam)
+    patient["VERTICAL_CD_RATIO_OD"] = float(vcd)
+    patient["RIMAREA_OD"] = float(rimarea)
+    patient["CUPVOLUME_OD"] = float(cup_vol)
 
     for i, val in enumerate(rnfl_vals, start=1):
-        patient[f"CLOCKHOUR_{i}_OD"] = val
+        patient[f"CLOCKHOUR_{i}_OD"] = float(val)
 
-    patient["GC_TEMPSUP_OD"] = gc_tempsup
-    patient["GC_SUP_OD"] = gc_sup
-    patient["GC_NASSUP_OD"] = gc_nassup
-    patient["GC_NASINF_OD"] = gc_nasinf
-    patient["GC_INF_OD"] = gc_inf
-    patient["GC_TEMPINF_OD"] = gc_tempinf
+    patient["GC_TEMPSUP_OD"] = float(gc_tempsup)
+    patient["GC_SUP_OD"] = float(gc_sup)
+    patient["GC_NASSUP_OD"] = float(gc_nassup)
+    patient["GC_NASINF_OD"] = float(gc_nasinf)
+    patient["GC_INF_OD"] = float(gc_inf)
+    patient["GC_TEMPINF_OD"] = float(gc_tempinf)
 
     # advanced
-    patient["CMT_OD"] = cmt
-    patient["AVERAGETHICKNESS_OD"] = avg_thk
+    patient["CMT_OD"] = float(cmt)
+    patient["AVERAGETHICKNESS_OD"] = float(avg_thk)
 
-    patient["QUADRANT_T_OD"] = quad_t
-    patient["QUADRANT_S_OD"] = quad_s
-    patient["QUADRANT_N_OD"] = quad_n
-    patient["QUADRANT_I_OD"] = quad_i
+    patient["QUADRANT_T_OD"] = float(quad_t)
+    patient["QUADRANT_S_OD"] = float(quad_s)
+    patient["QUADRANT_N_OD"] = float(quad_n)
+    patient["QUADRANT_I_OD"] = float(quad_i)
 
-    patient["RNFL_SUP_OD"] = rnfl_sup
-    patient["RNFL_INF_OD"] = rnfl_inf
-    patient["RNFL_NASSUP_OD"] = rnfl_nsup
-    patient["RNFL_NASINF_OD"] = rnfl_ninf
-    patient["RNFL_TEMPSUP_OD"] = rnfl_tsup
-    patient["RNFL_TEMPINF_OD"] = rnfl_tinf
-    patient["RNFL_MINIMUM_OD"] = rnfl_min
+    patient["RNFL_SUP_OD"] = float(rnfl_sup)
+    patient["RNFL_INF_OD"] = float(rnfl_inf)
+    patient["RNFL_NASSUP_OD"] = float(rnfl_nsup)
+    patient["RNFL_NASINF_OD"] = float(rnfl_ninf)
+    patient["RNFL_TEMPSUP_OD"] = float(rnfl_tsup)
+    patient["RNFL_TEMPINF_OD"] = float(rnfl_tinf)
+    patient["RNFL_MINIMUM_OD"] = float(rnfl_min)
 
-    patient["OR_TEMPSUP_OD"] = or_tsup
-    patient["OR_SUP_OD"] = or_sup
-    patient["OR_NASSUP_OD"] = or_nsup
-    patient["OR_NASINF_OD"] = or_ninf
-    patient["OR_INF_OD"] = or_inf
-    patient["OR_TEMPINF_OD"] = or_tinf
-    patient["OR_AVERAGE_OD"] = or_avg
-    patient["OR_MINIMUM_OD"] = or_min
+    patient["OR_TEMPSUP_OD"] = float(or_tsup)
+    patient["OR_SUP_OD"] = float(or_sup)
+    patient["OR_NASSUP_OD"] = float(or_nsup)
+    patient["OR_NASINF_OD"] = float(or_ninf)
+    patient["OR_INF_OD"] = float(or_inf)
+    patient["OR_TEMPINF_OD"] = float(or_tinf)
+    patient["OR_AVERAGE_OD"] = float(or_avg)
+    patient["OR_MINIMUM_OD"] = float(or_min)
 
-    patient["CUBEAVGTHICKNESS_ILMRPE_OD"] = cube_thk
-    patient["CUBEAVGTHICKNESS_ILMRPEFIT_OD"] = cube_thk_fit
-    patient["CUBEVOLUME_ILMRPE_OD"] = cube_vol
-    patient["CUBEVOLUME_ILMRPEFIT_OD"] = cube_vol_fit
-    patient["C_ILMRPE_OD"] = c_ilmrpe
-    patient["C_ILMRPEFIT_OD"] = c_ilmrpe_fit
+    patient["CUBEAVGTHICKNESS_ILMRPE_OD"] = float(cube_thk)
+    patient["CUBEAVGTHICKNESS_ILMRPEFIT_OD"] = float(cube_thk_fit)
+    patient["CUBEVOLUME_ILMRPE_OD"] = float(cube_vol)
+    patient["CUBEVOLUME_ILMRPEFIT_OD"] = float(cube_vol_fit)
+    patient["C_ILMRPE_OD"] = float(c_ilmrpe)
+    patient["C_ILMRPEFIT_OD"] = float(c_ilmrpe_fit)
 
-    patient["SFCT_OD"] = sfct
+    patient["SFCT_OD"] = float(sfct)
 
-    patient["Z_CENTER_OD"] = z_center
-    patient["Z_INNERRIGHT_OD"] = z_ir
-    patient["Z_INNERSUPERIOR_OD"] = z_is
-    patient["Z_INNERLEFT_OD"] = z_il
-    patient["Z_INNERINFERIOR_OD"] = z_ii
-    patient["Z_OUTERRIGHT_OD"] = z_or
-    patient["Z_OUTERSUPERIOR_OD"] = z_os
-    patient["Z_OUTERLEFT_OD"] = z_ol
-    patient["Z_OUTERINFERIOR_OD"] = z_oi
+    patient["Z_CENTER_OD"] = float(z_center)
+    patient["Z_INNERRIGHT_OD"] = float(z_ir)
+    patient["Z_INNERSUPERIOR_OD"] = float(z_is)
+    patient["Z_INNERLEFT_OD"] = float(z_il)
+    patient["Z_INNERINFERIOR_OD"] = float(z_ii)
+    patient["Z_OUTERRIGHT_OD"] = float(z_or)
+    patient["Z_OUTERSUPERIOR_OD"] = float(z_os)
+    patient["Z_OUTERLEFT_OD"] = float(z_ol)
+    patient["Z_OUTERINFERIOR_OD"] = float(z_oi)
 
-    # age-adjusted residuals
-    patient["RNFL12_MEAN"] = rnfl12_mean
-    patient["RNFL12_RESID"] = rnfl12_resid
-    patient["GC6_MEAN"] = gc6_mean
-    patient["GC6_RESID"] = gc6_resid
+    # age-adjusted residuals (feature names must match training: lower-case)
+    patient["rnfl12_mean"] = float(rnfl12_mean)
+    patient["rnfl12_resid"] = float(rnfl12_resid)
+    patient["gc6_mean"] = float(gc6_mean)
+    patient["gc6_resid"] = float(gc6_resid)
+
+    # Sanity check for missing features
+    missing_feats = [f for f in feat_list if f not in patient]
+    if missing_feats:
+        st.warning(
+            "Some features required by the trained model are missing in the app: "
+            + ", ".join(missing_feats)
+            + ". They will be filled with NaN for this run. "
+            "Please report this if it persists."
+        )
 
     # Build vector in the correct feature order
-    x_vec = np.array([[patient[f] for f in feat_list]], dtype=float)
+    x_vec = np.array([[patient.get(f, np.nan) for f in feat_list]], dtype=float)
 
     # =============================
     # 4. Predict & scores
@@ -570,7 +629,9 @@ def main():
     delta_age = predicted_age - age
 
     onas_percentile, onas_z = compute_onas(delta_age, onas_sigma)
-    rnfl_z, rnfl_pct = compute_rnfl_z_and_percentile(rnfl12_mean, rnfl_mean, rnfl_sd)
+    rnfl_z, rnfl_pct = compute_rnfl_z_and_percentile(
+        rnfl12_mean, rnfl_mean, rnfl_sd
+    )
 
     # =============================
     # 5. Optic nerve age & ONAS
